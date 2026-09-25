@@ -1,0 +1,55 @@
+{
+  "answers": {
+    "claim_0": {
+      "noul": 0,
+      "type": "noul"
+    },
+    "route_0": {
+      "choice": "billing",
+      "confidence": 1,
+      "probabilities": {
+        "billing": 1,
+        "support": 0
+      },
+      "type": "choice"
+    },
+    "severity_0": {
+      "confidence": 1,
+      "legend": {
+        "0": "Can wait.",
+        "1": "Needs attention today."
+      },
+      "probabilities": {
+        "0": 1,
+        "1": 0
+      },
+      "score": 1,
+      "type": "score"
+    }
+  },
+  "model": "jev-1.13.0",
+  "schema_version": "1",
+  "status": "ok",
+  "stub": true,
+  "usage": null,
+  "verdicts": {
+    "claim_0": {
+      "band": "no",
+      "margin": 0.10,
+      "noul": 0,
+      "threshold": 0.70,
+      "type": "noul"
+    },
+    "route_0": {
+      "choice": "billing",
+      "confidence": 1,
+      "probability": 1,
+      "type": "choice"
+    },
+    "severity_0": {
+      "confidence": 1,
+      "score": 1,
+      "type": "score"
+    }
+  }
+}

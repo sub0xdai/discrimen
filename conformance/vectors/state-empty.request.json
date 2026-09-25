@@ -1,0 +1,10 @@
+{
+  "model": "jev-1.13.0",
+  "state": {},
+  "questions": {
+    "claim_0": {
+      "type": "noul",
+      "instructions": "Does the passage support each material claim in the statement."
+    }
+  }
+}

@@ -1,0 +1,31 @@
+{
+  "answers": {
+    "severity_0": {
+      "confidence": 1,
+      "legend": {
+        "0": "Can wait indefinitely.",
+        "1": "Should be read this week.",
+        "2": "Needs attention today."
+      },
+      "probabilities": {
+        "0": 1,
+        "1": 0,
+        "2": 0
+      },
+      "score": 1,
+      "type": "score"
+    }
+  },
+  "model": "jev-1.13.0",
+  "schema_version": "1",
+  "status": "ok",
+  "stub": true,
+  "usage": null,
+  "verdicts": {
+    "severity_0": {
+      "confidence": 1,
+      "score": 1,
+      "type": "score"
+    }
+  }
+}

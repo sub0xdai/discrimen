@@ -1,0 +1,19 @@
+{
+  "model": "jev-1.13.0",
+  "state": {
+    "schema": "conformance.state.v1",
+    "task": "Decide whether the cited passage supports the stated claim.",
+    "context": "One claim and one passage, supplied by the caller."
+  },
+  "questions": {
+    "route_0": {
+      "type": "choice",
+      "instructions": "Which queue should this message reach? Choose no_match if none applies.",
+      "criteria": {
+        "billing": "A billing question or invoice dispute.",
+        "neither": "Nothing here needs a queue.",
+        "support": "A product or account problem."
+      }
+    }
+  }
+}

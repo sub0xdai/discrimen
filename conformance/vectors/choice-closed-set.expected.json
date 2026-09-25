@@ -1,0 +1,27 @@
+{
+  "answers": {
+    "route_0": {
+      "choice": "billing",
+      "confidence": 1,
+      "probabilities": {
+        "billing": 1,
+        "neither": 0,
+        "support": 0
+      },
+      "type": "choice"
+    }
+  },
+  "model": "jev-1.13.0",
+  "schema_version": "1",
+  "status": "ok",
+  "stub": true,
+  "usage": null,
+  "verdicts": {
+    "route_0": {
+      "choice": "billing",
+      "confidence": 1,
+      "probability": 1,
+      "type": "choice"
+    }
+  }
+}

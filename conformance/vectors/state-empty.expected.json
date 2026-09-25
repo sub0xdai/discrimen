@@ -1,0 +1,22 @@
+{
+  "answers": {
+    "claim_0": {
+      "noul": 0.8,
+      "type": "noul"
+    }
+  },
+  "model": "jev-1.13.0",
+  "schema_version": "1",
+  "status": "ok",
+  "stub": true,
+  "usage": null,
+  "verdicts": {
+    "claim_0": {
+      "band": "yes",
+      "margin": 0.10,
+      "noul": 0.8,
+      "threshold": 0.70,
+      "type": "noul"
+    }
+  }
+}

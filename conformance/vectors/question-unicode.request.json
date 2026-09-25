@@ -1,0 +1,14 @@
+{
+  "model": "jev-1.13.0",
+  "state": {
+    "schema": "conformance.state.v1",
+    "task": "Decide whether the cited passage supports the stated claim.",
+    "context": "One claim and one passage, supplied by the caller."
+  },
+  "questions": {
+    "claim_0": {
+      "type": "noul",
+      "instructions": "Does the passage support the claim about the café’s naïve résumé policy?"
+    }
+  }
+}

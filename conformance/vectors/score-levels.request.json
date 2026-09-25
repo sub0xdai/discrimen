@@ -1,0 +1,19 @@
+{
+  "model": "jev-1.13.0",
+  "state": {
+    "schema": "conformance.state.v1",
+    "task": "Decide whether the cited passage supports the stated claim.",
+    "context": "One claim and one passage, supplied by the caller."
+  },
+  "questions": {
+    "severity_0": {
+      "type": "score",
+      "instructions": "How much attention does this message need?",
+      "criteria": [
+        "Can wait indefinitely.",
+        "Should be read this week.",
+        "Needs attention today."
+      ]
+    }
+  }
+}
