@@ -57,9 +57,14 @@ this repository is official or endorsed by the provider.
 | `bin/jev.sh` | Transport. Typed questions in, one tagged envelope out. |
 | `bin/jev_sieve_report.sh` | Calibration gate. Reads a decision log, prints a verdict. |
 | `bin/check-argv.sh` | Tests that the credential never reaches curl's argv. |
-| `conformance/` | Offline request and response vectors, plus a runner. |
+| `conformance/` | Offline vectors, and a runner that tests any implementation. |
+| `fixtures/` | Three synthetic decision logs, which also document the log schema. |
 | `adapters/pi/` | A worked adapter: a hook that hides irrelevant blocks in tool results. |
-| `docs/` | The instrument rules, the security review, the measured example. |
+| `docs/instrument.md` | Why the model, the state, and the question must all be pinned. |
+| `docs/security.md` | The audit, and the ten asks it produced. |
+| `docs/design-sieve.md` | The design record for the worked adapter. |
+| `run.sh` | The whole offline self-test. |
+| `install.sh` | Copies the three scripts to `~/.local/bin`. |
 
 ## Install
 
@@ -99,10 +104,23 @@ state.
 - The adapter ships off by default, because sending a tool result to a hosted model
   should be a deliberate act.
 
-## Status
+## Working on this repository
 
-`bin/`, `conformance/`, and `fixtures/` are in place. The harness adapter and the
-worked-example docs follow, so `adapters/` and `docs/` do not exist yet.
+Commits are checked by a Presidio hook at `hooks/pre-commit`, enabled per clone with
+`git config core.hooksPath hooks`. It scans staged `.rs`, `.ts`, `.tsx`, `.js`, and
+`.jsx` files and redacts credentials and personal data before they can be committed.
+
+Its recognisers are allowlisted in `scrub.py`, because Presidio's defaults fire on
+ordinary source code: `process.st` reads as a URL, `Date.now` as a person, `i3` as a
+licence number. Left unfiltered it rewrites the file it is meant to protect.
+
+The hook deliberately runs without `set -e`, because `scrub.py` exits `2` to mean "I
+changed files". Under `set -e` that exit aborts the hook before it can re-stage the
+redacted file, so the original secret stays in the index while the working tree looks
+clean. Hence no `-e`, and an explicit status instead.
+
+The first run downloads a spaCy model, roughly 600 MB. It lands in `.venv`, which is
+not committed, so a fresh clone pays for that once.
 
 ## Licence
 

@@ -1,0 +1,17 @@
+#!/bin/bash
+set -uo pipefail
+
+mapfile -t FILES < <(git diff --cached --name-only --diff-filter=ACM \
+  | grep -E '\.(rs|ts|tsx|js|jsx)$' || true)
+[ ${#FILES[@]} -eq 0 ] && exit 0
+
+status=0
+./.venv/bin/python scrub.py "${FILES[@]}" || status=$?
+case $status in
+    2)  git add -- "${FILES[@]}"
+        echo "⚠ PII/secrets scrubbed and re-staged - review before pushing."
+        exit 0 ;;
+    0)  exit 0 ;;
+    *)  echo "❌ scrub.py failed (exit $status)"
+        exit 1 ;;
+esac
