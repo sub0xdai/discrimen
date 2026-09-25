@@ -1,5 +1,7 @@
 # discrimen
 
+[![ci][ci-badge]][ci]
+
 Tools for letting a program ask a model for a judgment, and then check the answer.
 
 The name is Latin for the dividing line, and for the decisive moment. It is the root
@@ -181,3 +183,6 @@ MIT. See `LICENSE`.
 - The provider: <https://typesafe.ai/blog/introducing-system-one-models-and-jev>
 - A macOS coding app that applies the same split to route and tool choices:
   <https://github.com/codejunkie99/keel>
+
+[ci]: https://github.com/sub0xdai/discrimen/actions/workflows/ci.yml
+[ci-badge]: https://github.com/sub0xdai/discrimen/actions/workflows/ci.yml/badge.svg
