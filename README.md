@@ -35,6 +35,55 @@ program would have used a fallback it chose before it asked.
 Nothing in that sequence depends on the model's wording. The model picks from a
 list. The program holds the list, the rules, and the ability to act.
 
+## What a call looks like
+
+A question, some state, and one envelope back. Run it with `--stub` to see the shape
+without a credential and without a network call:
+
+```sh
+jev.sh --stub --noul 'Does the passage support the claim?' --state 'a claim and a passage'
+```
+
+```json
+{
+  "schema_version": "1",
+  "status": "ok",
+  "stub": true,
+  "model": "jev-1.13.0",
+  "answers": { "q1": { "type": "noul", "noul": 0.8 } },
+  "verdicts": { "q1": { "type": "noul", "noul": 0.8,
+                        "threshold": 0.70, "margin": 0.10, "band": "yes" } },
+  "usage": null
+}
+```
+
+A selection works the same way, and its options are named rather than numbered:
+
+```sh
+jev.sh --stub --choice 'Which queue?' \
+  --option billing='An invoice' --option support='A bug' --state 'a message'
+```
+
+```json
+{
+  "schema_version": "1",
+  "status": "ok",
+  "stub": true,
+  "model": "jev-1.13.0",
+  "answers": { "q1": { "type": "choice", "choice": "billing",
+                       "probabilities": { "billing": 1, "support": 0 },
+                       "confidence": 1 } },
+  "verdicts": { "q1": { "type": "choice", "choice": "billing",
+                        "probability": 1, "confidence": 1 } },
+  "usage": null
+}
+```
+
+Drop `--stub` and the same command asks the real model, which needs the credential
+from the install step. `--score` takes positional levels with `--level`. Repeat any
+of the three flags to put several questions in one request, which costs one round
+trip rather than one per question.
+
 ## Why there is a second half
 
 Judgments cost money and can be wrong, so the rest of this repository exists to
@@ -107,8 +156,9 @@ state.
 ## Working on this repository
 
 Commits are checked by a Presidio hook at `hooks/pre-commit`, enabled per clone with
-`git config core.hooksPath hooks`. It scans staged `.rs`, `.ts`, `.tsx`, `.js`, and
-`.jsx` files and redacts credentials and personal data before they can be committed.
+`git config core.hooksPath hooks` after one `uv sync`. It scans staged `.rs`, `.ts`,
+`.tsx`, `.js`, and `.jsx` files and redacts credentials and personal data before they
+can be committed.
 
 Its recognisers are allowlisted in `scrub.py`, because Presidio's defaults fire on
 ordinary source code: `process.st` reads as a URL, `Date.now` as a person, `i3` as a

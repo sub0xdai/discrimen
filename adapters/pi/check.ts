@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import {
   DEFAULT_MODE,
   MODEL,
@@ -48,9 +50,10 @@ assert.equal(
 assert.equal(targetNamedInTask("/repo/src/journal_service.rs", "read the spec"), false);
 assert.equal(targetNamedInTask("", "fix anything"), false, "an empty target names nothing");
 
-assert.equal(recallPath("/home/m0xu/.cache/jev/blocks/s1-b0-1-25.txt"), "s1-b0-1-25.txt");
-assert.equal(recallPath("cat /home/m0xu/.cache/jev/blocks/s1-b0-1-25.txt"), "s1-b0-1-25.txt");
-assert.equal(recallPath("/home/m0xu/.cache/jev/sieve.jsonl"), null);
+const blockCache = join(homedir(), ".cache/jev/blocks");
+assert.equal(recallPath(join(blockCache, "s1-b0-1-25.txt")), "s1-b0-1-25.txt");
+assert.equal(recallPath(`cat ${join(blockCache, "s1-b0-1-25.txt")}`), "s1-b0-1-25.txt");
+assert.equal(recallPath(join(homedir(), ".cache/jev/sieve.jsonl")), null);
 assert.equal(recallPath("/tmp/unrelated.txt"), null);
 
 const request: Request = { tool: "read", target: "/repo/exchange_api.rs", namedInTask: true };

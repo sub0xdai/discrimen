@@ -71,7 +71,7 @@ This repo already ships a Presidio scrubber at `scrub.py` and `.git/hooks/pre-co
 
 **S1. The block cache is a permanent plaintext copy outside the repo.**
 `~/.cache/jev` and `~/.cache/jev/blocks` are 0755 and every file inside is 0644.
-Traversal into `/home/m0xu` is closed to other users by the home directory mode, so the live exposure is this account, root, and the `libvirt-qemu` ACL entry that already holds execute on `/home/m0xu` - which is to say every VM on this box.
+Traversal into the home directory is closed to other users by its mode, so the live exposure is this account, root, and the `libvirt-qemu` ACL entry that already holds execute on the home directory - which is to say every VM on this box.
 The cache is never pruned, by design (`ponytail: samples never pruned`).
 It holds the text of content the judge itself deemed irrelevant, which is exactly the material nobody audits.
 `~/.cache/jev/sieve.jsonl` records the 300-char `target`, which is the literal command, so command lines land in a world-readable log forever.
