@@ -1,0 +1,434 @@
+#!/usr/bin/env bash
+# jev.sh - batch typed judgments from TypeSafe System One (Jev).
+#
+# Emits one JSON object on stdout and exits 0 for every judgment outcome,
+# including failure, so a caller never has to tell "no verdict" apart from
+# "broken script". Bad arguments are the exception: they exit 2 with a message
+# on stderr, because that is a programmer error and not a judgment.
+#
+# Usage
+#   jev.sh --noul 'Is this an account takeover signal?' < evidence.txt
+#   jev.sh --choice 'Which queue?' --option support='ordinary' --option sec='incident'
+#   jev.sh --score 'How grounded?' --level 'unsafe' --level 'grounded'
+#   jev.sh --spec request.json        # raw {state, model, questions} body
+#
+# --option takes key=value because a Choice names its options. --level takes a
+# bare description because Score levels are positional and their order is the
+# meaning. The API returns 422 if score criteria is a map instead of a list.
+#
+# Questions batch: repeat the question flags and one request carries them all.
+# Adding questions costs only question tokens, so one call per decision cycle.
+#
+# Flags
+#   --state TEXT | --state-file FILE   default: stdin (string state)
+#   --threshold N            noul band threshold (default 0.70)
+#   --uncertainty-margin N   half-width of the uncertain band (default 0.10)
+#   --model M                default jev-1.13.0
+#   --timeout S              per-attempt timeout (default 10)
+#   --stub                   deterministic offline judge, no network
+#   --no-pace                skip the choke point (tests, replay)
+#   --verbose                request and response trace on stderr
+#
+# Envelope. `status` is the discriminant; there is no boolean gate and no
+# optional error string sitting beside a success payload.
+#   {"schema_version":"1","status":"ok","model":..,"answers":{..},
+#    "verdicts":{..},"usage":{..}}
+#   {"schema_version":"1","status":"disabled"}
+#   {"schema_version":"1","status":"error","reason":"timeout"}
+#
+# `verdicts` adds local banding on top of the raw answers: a noul gains
+# threshold, margin, and a band of yes|no|uncertain. The uncertain band is a
+# decision for the caller, never rounded away here.
+#
+# Credentials: ~/.config/typesafe/credentials.env (TYPESAFE_API_KEY=...), mode
+# 600. Override the path with JEV_CRED_FILE. The key is read from that file and
+# handed to curl through a 0600 --config file, so it never appears on a command
+# line or in argv.
+#
+# Pacing: one process-wide 2s choke point plus an escalating 429 breaker. The
+# published quota is 1,200 req/min but the real one is unpublished, so this
+# stays modest on purpose. See ~/.pi/typesafe-jev-assessment.md section 8.3.
+#
+# `set -e` is deliberately absent: the contract is to always emit an envelope,
+# and errexit would abort before the error envelope could be written.
+
+set -uo pipefail
+
+ENDPOINT="${JEV_ENDPOINT:-https://api.typesafe.ai/v1/systemone}"
+CRED_FILE="${JEV_CRED_FILE:-$HOME/.config/typesafe/credentials.env}"
+CACHE_DIR="${JEV_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/jev}"
+PACE_FILE="$CACHE_DIR/last_request"
+BREAKER_FILE="$CACHE_DIR/breaker"
+MIN_INTERVAL="${JEV_MIN_INTERVAL:-2}"
+MAX_COOLDOWN=3600
+
+# Pinned, not floating: the instrument is (model, state representation, question),
+# and a floating alias leaves the model unpinned under your own log.
+MODEL="${JEV_MODEL:-jev-1.13.0}"
+THRESHOLD="${JEV_THRESHOLD:-0.70}"
+MARGIN="${JEV_UNCERTAINTY_MARGIN:-0.10}"
+TIMEOUT="${JEV_TIMEOUT:-10}"
+
+STATE=""
+STATE_FILE=""
+SPEC=""
+STUB=0
+PACE=1
+VERBOSE=0
+CUR=-1
+POST_CODE=""
+POST_FILE=""
+HEADER_FILE=""
+declare -a NAMES=() TYPES=() INSTRS=() CRIT=()
+
+cleanup() {
+  [[ -n "$POST_FILE" && -f "$POST_FILE" ]] && rm -f "$POST_FILE"
+  [[ -n "$HEADER_FILE" && -f "$HEADER_FILE" ]] && rm -f "$HEADER_FILE"
+  return 0
+}
+trap cleanup EXIT
+
+die() {
+  printf 'jev.sh: %s\n' "$1" >&2
+  exit 2
+}
+
+trace() {
+  (( VERBOSE )) || return 0
+  printf 'jev.sh: %s\n' "$1" >&2
+}
+
+# Carries the HTTP status and the API's own error detail, so one failed call is
+# diagnosable on its own instead of needing a hand-written probe.
+emit_error() {
+  local reason="$1" http="null" detail="null"
+  [[ "${POST_CODE:-}" =~ ^[0-9]+$ ]] && http="$POST_CODE"
+  if [[ -n "${POST_FILE:-}" && -f "${POST_FILE:-}" ]]; then
+    detail=$(jq -c '
+      (.detail // .) as $d
+      | (if ($d | type) == "array" then $d[0] else $d end) as $e
+      | if ($e | type) == "object"
+        then { error_type: ($e.error_type // null),
+               message: ($e.message // $e.msg // null),
+               input: ($e.input // null) }
+        else ($e | tostring | .[0:300])
+        end' "$POST_FILE" 2>/dev/null) || detail="null"
+    [[ -n "$detail" && "$detail" != "null" ]] || detail="null"
+  fi
+  jq -cn --arg r "$reason" --argjson s "$http" --argjson d "$detail" \
+    '{schema_version:"1",status:"error",reason:$r,http_status:$s,detail:$d}'
+  exit 0
+}
+
+emit_disabled() {
+  jq -cn '{schema_version:"1",status:"disabled"}'
+  exit 0
+}
+
+emit_stub() {
+  local answers verdicts
+  answers=$(stub_answers "$1")
+  verdicts=$(band_verdicts "$answers") || emit_error invalid
+  jq -cn --arg model "$MODEL" --argjson a "$answers" --argjson v "$verdicts" \
+    '{schema_version:"1",status:"ok",stub:true,model:$model,
+      answers:$a,verdicts:$v,usage:null}'
+  exit 0
+}
+
+need_arg() {
+  (( $# >= 2 )) || die "$1 needs a value"
+  printf '%s' "$2"
+}
+
+parse_args() {
+  while (( $# > 0 )); do
+    case "$1" in
+      --state)              STATE=$(need_arg "$1" "${2:-}"); shift 2 ;;
+      --state-file)         STATE_FILE=$(need_arg "$1" "${2:-}"); shift 2 ;;
+      --spec)               SPEC=$(need_arg "$1" "${2:-}"); shift 2 ;;
+      --noul)               add_question noul "$(need_arg "$1" "${2:-}")"; shift 2 ;;
+      --choice)             add_question choice "$(need_arg "$1" "${2:-}")"; shift 2 ;;
+      --score)              add_question score "$(need_arg "$1" "${2:-}")"; shift 2 ;;
+      --option)             add_option "$(need_arg "$1" "${2:-}")"; shift 2 ;;
+      --level)              add_level "$(need_arg "$1" "${2:-}")"; shift 2 ;;
+      --threshold)          THRESHOLD=$(need_arg "$1" "${2:-}"); shift 2 ;;
+      --uncertainty-margin) MARGIN=$(need_arg "$1" "${2:-}"); shift 2 ;;
+      --model)              MODEL=$(need_arg "$1" "${2:-}"); shift 2 ;;
+      --timeout)            TIMEOUT=$(need_arg "$1" "${2:-}"); shift 2 ;;
+      --stub)               STUB=1; shift ;;
+      --no-pace)            PACE=0; shift ;;
+      --verbose)            VERBOSE=1; shift ;;
+      -h|--help)            usage; exit 0 ;;
+      *)                    die "unknown argument: $1" ;;
+    esac
+  done
+}
+
+usage() {
+  awk 'NR>1 && /^#/ {sub(/^# ?/, ""); print; next} NR>1 {exit}' "$0"
+}
+
+add_question() {
+  local seed='{}'
+  [[ "$1" == score ]] && seed='[]'
+  NAMES+=("q$(( ${#NAMES[@]} + 1 ))")
+  TYPES+=("$1")
+  INSTRS+=("$2")
+  CRIT+=("$seed")
+  CUR=$(( ${#NAMES[@]} - 1 ))
+}
+
+# Choice criteria is a map of option name to meaning.
+add_option() {
+  local pair="$1" k v
+  (( CUR >= 0 )) || die "--option before any question flag"
+  [[ "${TYPES[$CUR]}" == choice ]] || die "--option belongs to a --choice question"
+  [[ "$pair" == *=* ]] || die "expected key=value, got: $pair"
+  k="${pair%%=*}"; v="${pair#*=}"
+  CRIT[$CUR]=$(jq -c --arg k "$k" --arg v "$v" '. + {($k): $v}' <<<"${CRIT[$CUR]}")
+}
+
+# Score criteria is an ordered list of levels. Position is the meaning, so the
+# API takes a list here where Choice takes a map.
+add_level() {
+  (( CUR >= 0 )) || die "--level before any question flag"
+  [[ "${TYPES[$CUR]}" == score ]] || die "--level belongs to a --score question"
+  CRIT[$CUR]=$(jq -c --arg v "$1" '. + [$v]' <<<"${CRIT[$CUR]}")
+}
+
+# Trailing newline is trimmed so a state file does not carry one into the
+# model's view of the text.
+slurp() {
+  local text
+  text=$(cat "${1:--}")
+  printf '%s' "${text%$'\n'}"
+}
+
+resolve_state() {
+  if [[ -n "$STATE_FILE" ]]; then
+    [[ -f "$STATE_FILE" ]] || die "no such state file: $STATE_FILE"
+    STATE=$(slurp "$STATE_FILE")
+  elif [[ -z "$STATE" ]]; then
+    [[ -t 0 ]] && die "no state: pass --state, --state-file, or pipe stdin"
+    STATE=$(slurp -)
+  fi
+  [[ -n "$STATE" ]] || die "state is empty"
+}
+
+# Runs in the top-level shell, never inside a command substitution, so that die
+# actually stops the script. A die inside $(...) only kills the subshell and
+# lets a malformed request through to jq.
+validate_questions() {
+  local i n t c
+  for (( i=0; i<${#NAMES[@]}; i++ )); do
+    n="${NAMES[$i]}"; t="${TYPES[$i]}"; c="${CRIT[$i]}"
+    case "$t" in
+      score)  (( $(jq 'length' <<<"$c") >= 2 )) || die "$n needs at least two --level values" ;;
+      choice) (( $(jq 'length' <<<"$c") >= 2 )) || die "$n needs at least two --option values" ;;
+    esac
+  done
+}
+
+build_questions() {
+  local out='{}' i n t ins c
+  for (( i=0; i<${#NAMES[@]}; i++ )); do
+    n="${NAMES[$i]}"; t="${TYPES[$i]}"; ins="${INSTRS[$i]}"; c="${CRIT[$i]}"
+    out=$(jq -c --arg n "$n" --arg t "$t" --arg i "$ins" --argjson c "$c" \
+      '. + {($n): ({type:$t, instructions:$i}
+                     + (if ($c | length) > 0 then {criteria:$c} else {} end))}' \
+      <<<"$out") || return 1
+  done
+  printf '%s' "$out"
+}
+
+build_request() {
+  jq -cn --argjson state "$1" --arg model "$MODEL" --argjson q "$2" \
+    '{state:$state, model:$model, questions:$q}'
+}
+
+# Deterministic offline judge. The noul value varies with instruction text so
+# all three bands are reachable in tests; choice and score pick the first key.
+stub_answers() {
+  jq -c '
+    to_entries | map(
+      .key as $k | .value as $v | ($v.criteria // {}) as $c |
+      { key: $k,
+        value: (
+          if $v.type == "noul" then
+            {type:"noul", noul: ((($v.instructions | length) % 9) / 10)}
+          elif $v.type == "choice" then
+            {type:"choice", choice: ($c | keys_unsorted[0]),
+             probabilities: ($c | to_entries
+                               | map({key:.key,
+                                      value: (if .key == ($c | keys_unsorted[0])
+                                              then 1 else 0 end)})
+                               | from_entries),
+             confidence: 1}
+          else
+            {type:"score", score: 1,
+             legend: ($c | to_entries
+                       | map({key: (.key | tostring), value: .value})
+                       | from_entries),
+             probabilities: ($c | to_entries
+                               | map({key: (.key | tostring),
+                                      value: (if .key == 0 then 1 else 0 end)})
+                               | from_entries),
+             confidence: 1}
+          end)
+      }
+    ) | from_entries' <<<"$1"
+}
+
+band_verdicts() {
+  jq -c --argjson t "$THRESHOLD" --argjson m "$MARGIN" '
+    to_entries | map(
+      .key as $k | .value as $v |
+      { key: $k,
+        value: (
+          if $v.type == "noul" then
+            {type:"noul", noul:$v.noul, threshold:$t, margin:$m,
+             band: (if $v.noul >= ($t + $m) then "yes"
+                    elif $v.noul <= ($t - $m) then "no"
+                    else "uncertain" end)}
+          elif $v.type == "choice" then
+            {type:"choice", choice:$v.choice,
+             probability: ($v.probabilities[$v.choice] // null),
+             confidence: ($v.confidence // null)}
+          else
+            {type:"score", score:$v.score, confidence: ($v.confidence // null)}
+          end)
+      }
+    ) | from_entries' <<<"$1"
+}
+
+resolve_key() {
+  local k="${TYPESAFE_API_KEY:-}" mode
+  if [[ -z "$k" && -f "$CRED_FILE" ]]; then
+    mode=$(stat -c '%a' "$CRED_FILE" 2>/dev/null || printf '')
+    [[ "$mode" == "600" ]] || printf 'jev.sh: warning: %s mode is %s, want 600\n' \
+      "$CRED_FILE" "$mode" >&2
+    k=$(grep -E '^TYPESAFE_API_KEY=' "$CRED_FILE" | tail -1 | cut -d= -f2-)
+    k="${k%\"}"; k="${k#\"}"; k="${k%\'}"; k="${k#\'}"
+  fi
+  printf '%s' "$k"
+}
+
+# One process-wide choke point. Returns 1 while the breaker is open, which the
+# caller reports as rate_limited without touching the network, so a ban can
+# never be refreshed by a retry loop.
+pace_gate() {
+  (( PACE )) || return 0
+  mkdir -p "$CACHE_DIR" 2>/dev/null || return 0
+  local open_until=0 last=0 now wait
+  if [[ -f "$BREAKER_FILE" ]]; then
+    open_until=$(jq -r '.until // 0' "$BREAKER_FILE" 2>/dev/null) || open_until=0
+    [[ "$open_until" =~ ^[0-9]+$ ]] || open_until=0
+  fi
+  now=$(date +%s)
+  (( now < open_until )) && return 1
+  [[ -f "$PACE_FILE" ]] && last=$(cat "$PACE_FILE" 2>/dev/null || printf '0')
+  [[ "$last" =~ ^[0-9]+$ ]] || last=0
+  wait=$(( MIN_INTERVAL - (now - last) ))
+  (( wait > 0 )) && sleep "$wait"
+  date +%s > "$PACE_FILE" 2>/dev/null || true
+  return 0
+}
+
+record_success() {
+  rm -f "$BREAKER_FILE" 2>/dev/null || true
+}
+
+record_429() {
+  local fails=1 cooldown
+  if [[ -f "$BREAKER_FILE" ]]; then
+    fails=$(( $(jq -r '.failures // 0' "$BREAKER_FILE" 2>/dev/null || printf '0') + 1 ))
+  fi
+  cooldown=$(( 60 * (2 ** (fails - 1)) ))
+  (( cooldown > MAX_COOLDOWN )) && cooldown=$MAX_COOLDOWN
+  jq -cn --argjson f "$fails" --argjson u "$(( $(date +%s) + cooldown ))" \
+    '{failures:$f, until:$u}' > "$BREAKER_FILE" 2>/dev/null || true
+}
+
+# Writes the body to POST_FILE and the HTTP status, or a transport class, to
+# POST_CODE. It never emits: a command substitution would swallow the envelope
+# and exit only the subshell, so the decision belongs to the caller. The bearer
+# token is written to a 0600 file once and handed to curl with --config, so it
+# is not visible in the process list the way a -H argument is.
+post() {
+  local raw rc
+  POST_FILE=$(mktemp) || die "mktemp failed"
+  HEADER_FILE=$(mktemp) || die "mktemp failed"
+  chmod 600 "$HEADER_FILE" || die "could not tighten the header file"
+  printf 'header = "Authorization: Bearer %s"\nheader = "Content-Type: application/json"\n' "$1" \
+    >"$HEADER_FILE" || die "could not write the header file"
+  raw=$(curl -sS -m "$TIMEOUT" -o "$POST_FILE" -w '%{http_code}' -X POST "$ENDPOINT" \
+    --config "$HEADER_FILE" --data-binary "$2" 2>/dev/null)
+  rc=$?
+  if (( rc != 0 )); then
+    (( rc == 28 )) && POST_CODE=timeout || POST_CODE=transport
+    return 0
+  fi
+  POST_CODE=$(printf '%s' "$raw" | tr -d '[:space:]')
+  [[ "$POST_CODE" =~ ^[0-9]+$ ]] || POST_CODE=transport
+}
+
+main() {
+  parse_args "$@"
+
+  local req answers verdicts usage model
+
+  if [[ -n "$SPEC" ]]; then
+    if [[ "$SPEC" == "-" ]]; then
+      req=$(slurp -)
+    else
+      [[ -f "$SPEC" ]] || die "no such spec file: $SPEC"
+      req=$(cat "$SPEC")
+    fi
+    jq -e . <<<"$req" >/dev/null 2>&1 || die "spec is not valid JSON"
+    model=$(jq -r '.model // empty' <<<"$req")
+    MODEL="${model:-$MODEL}"
+    req=$(jq -c --arg m "$MODEL" '. + {model:$m}' <<<"$req")
+    (( STUB )) && emit_stub "$(jq -c '.questions // {}' <<<"$req")"
+  else
+    (( ${#NAMES[@]} > 0 )) || die "no questions: pass --noul/--choice/--score"
+    validate_questions
+    resolve_state
+    local questions
+    questions=$(build_questions) || die "could not assemble the questions"
+    (( STUB )) && emit_stub "$questions"
+    req=$(build_request "$(jq -cn --arg s "$STATE" '$s')" "$questions")
+  fi
+
+  local key
+  key=$(resolve_key)
+  [[ -n "$key" ]] || emit_disabled
+  [[ "$key" != *'"'* && "$key" != *$'\n'* ]] || emit_error invalid
+
+  pace_gate || emit_error rate_limited
+  trace "POST $ENDPOINT"
+  post "$key" "$req"
+
+  case "$POST_CODE" in
+    200)      ;;
+    timeout)  emit_error timeout ;;
+    transport) emit_error transport ;;
+    401)      emit_error unauthorized ;;
+    422)      emit_error invalid ;;
+    429)      record_429; emit_error rate_limited ;;
+    529)      emit_error overloaded ;;
+    *)        emit_error error ;;
+  esac
+  record_success
+
+  answers=$(jq -c '.answers // empty' "$POST_FILE" 2>/dev/null)
+  [[ -n "$answers" && "$answers" != "null" ]] || emit_error invalid
+  usage=$(jq -c '.usage // null' "$POST_FILE" 2>/dev/null) || usage=null
+  model=$(jq -r '.model // empty' "$POST_FILE" 2>/dev/null)
+  verdicts=$(band_verdicts "$answers") || emit_error invalid
+
+  jq -cn --arg model "${model:-$MODEL}" --argjson a "$answers" \
+    --argjson v "$verdicts" --argjson u "$usage" \
+    '{schema_version:"1",status:"ok",model:$model,answers:$a,verdicts:$v,usage:$u}'
+}
+
+main "$@"

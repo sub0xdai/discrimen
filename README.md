@@ -63,15 +63,17 @@ this repository is official or endorsed by the provider.
 
 ## Install
 
-1. Put `jev.sh` somewhere on `PATH`. Write a `chmod 600` file holding
-   `TYPESAFE_API_KEY` at `~/.config/typesafe/credentials.env`. Both paths can be
-   overridden with `JEV_SH` and `JEV_CRED_FILE`.
+1. Run `./install.sh`, which copies the three scripts to `~/.local/bin`. Change
+   the target with `PREFIX`. Write a `chmod 600` file holding `TYPESAFE_API_KEY`
+   at `~/.config/typesafe/credentials.env`. Both paths can be overridden with
+   `JEV_SH` and `JEV_CRED_FILE`.
 2. For the pi adapter, read `adapters/pi/INSTALL.md`.
 3. Run `./run.sh`. It needs no credential and makes no network calls.
 
 `jev.sh` reads the credential from that file and hands it to curl through a `0600`
 `--config` file, so it never appears in the process list. `check-argv.sh` asserts
-this by running curl against a local listener and reading its argv.
+this by running curl against a local listener and reading its argv, which needs
+Linux and GNU netcat because it inspects `/proc`.
 
 ## Verifying without a key
 
@@ -99,8 +101,8 @@ state.
 
 ## Status
 
-The contract and the licence are in place. The code, the vectors, the adapter, and
-the docs follow, so `bin/`, `adapters/`, and `docs/` do not exist yet.
+`bin/`, `conformance/`, and `fixtures/` are in place. The harness adapter and the
+worked-example docs follow, so `adapters/` and `docs/` do not exist yet.
 
 ## Licence
 
